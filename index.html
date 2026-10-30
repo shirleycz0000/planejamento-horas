@@ -1,0 +1,326 @@
+<!doctype html>
+<html lang="pt-BR"
+  ><head
+    ><meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+    <title>Planejamento de Horas</title>
+    <link
+      href="https://fonts.googleapis.com/css2?family=Figtree:wght@400;600;700&display=swap"
+      rel="stylesheet"
+    />
+    <link rel="stylesheet" href="app.css" /></head
+  ><body
+    ><main>
+      <div class="topbar"
+        ><div id="cloud" class="cloud" role="status"></div
+        ><button id="gchip" class="gchip" hidden title="Google Agenda">📅 Agenda</button
+        ><button id="thm" title="Alternar tema">Tema</button></div
+      >
+      <div id="runbar" class="runbar" hidden role="status"
+        ><span>⏱ Cronômetro rodando:</span><b id="rtl"></b><span id="rtt" class="rtt">00:00:00</span
+        ><button id="rpause" title="Pausar e somar o tempo à atividade">⏸ Pausar</button
+        ><button id="rgo">Ir para a atividade</button></div
+      >
+      <div id="home" hidden>
+        <header
+          ><h1>Projetos<small>Planejamento e controle de horas por projeto</small></h1
+          ><span style="display: flex; gap: 8px; flex-wrap: wrap"
+            ><button data-dlg="cad" title="Etapas e disciplinas padrão com as atividades">Cadastros</button
+            ><button data-dlg="tpl" title="Biblioteca de modelos próprios">Modelos</button
+            ><button data-dlg="hist" title="Estimado versus real nos projetos">Histórico</button
+            ><button data-dlg="kbd" title="Atalhos de teclado">⌨</button
+            ><span class="dd"
+              ><button data-dd aria-haspopup="menu" aria-expanded="false" title="Cópia de segurança de todos os dados"
+                >💾 Backup ▾</button
+              ><div class="ddm" role="menu" hidden
+                ><button id="bkdown" role="menuitem">⤓ Baixar backup de tudo (.json)</button
+                ><button id="bkup" role="menuitem">⤒ Restaurar um backup…</button></div
+              ></span
+            ><input type="file" id="bkfile" accept=".json,application/json" hidden aria-label="Arquivo de backup"
+            /><button id="gcal">📅 Vincular Google Agenda</button
+            ><button class="p" id="newp">+ Novo projeto</button></span
+          ></header
+        >
+        <div class="tabs" id="htabs" role="tablist" style="margin-bottom: 12px"
+          ><button data-ht="proj" class="on" role="tab">Projetos</button
+          ><button data-ht="hrs" role="tab">Horas trabalhadas</button></div
+        >
+        <div id="hprojs">
+          <p class="note" id="hsum" style="margin: 0 0 12px"></p>
+          <div class="pgrid" id="pgrid"><p class="note">Carregando projetos…</p></div></div
+        >
+        <div id="hhrs" hidden>
+          <div class="flt" id="hbar"
+            ><div class="tabs" id="hper"
+              ><button data-hp="d" class="on">Dia</button><button data-hp="w">Semana</button
+              ><button data-hp="m">Mês</button></div
+            ><button data-hnav="-1" aria-label="Período anterior" title="Período anterior">◀</button
+            ><input type="date" id="hdt" aria-label="Data de referência" /><button
+              data-hnav="1"
+              aria-label="Próximo período"
+              title="Próximo período"
+              >▶</button
+            ><button data-hnav="0">Hoje</button
+            ><select id="hpj" aria-label="Projeto"></select
+          ></div>
+          <div class="sum" id="hsm"></div>
+          <div id="hdc" style="margin-bottom: 12px"></div>
+          <div class="flt"
+            ><button id="hcol" title="Mostrar só o nome de cada projeto">Recolher projetos</button
+            ><button id="hexp">Expandir projetos</button><button id="hxls">Exportar Excel</button></div
+          >
+          <section class="geral" aria-label="Horas trabalhadas"
+            ><h2 id="hh2"></h2><div class="sc"><table id="htab" class="ett"></table></div
+          ></section>
+          <div id="hag"></div>
+          <details class="bmk" id="hlan"
+            ><summary>Lançar horas manualmente (somam ao tempo usado da atividade)</summary
+            ><div class="df" style="justify-content: flex-start; flex-wrap: wrap; margin-top: 8px"
+              ><select id="lpj" aria-label="Projeto"></select
+              ><select id="lat" aria-label="Atividade" style="max-width: 420px"></select
+              ><input type="date" id="ldt" aria-label="Data" /><input
+                id="lh"
+                placeholder="00:00"
+                style="width: 80px"
+                aria-label="Horas"
+              /><button class="p" id="lgo">Lançar</button></div
+            ><p class="note" id="lmsg"></p
+          ></details>
+          <div id="hun"></div> </div
+      ></div>
+      <dialog id="dlg"
+        ><p id="dm"></p
+        ><div class="df" style="justify-content: flex-end"
+          ><button id="dn">Cancelar</button><button class="p" id="dy">Confirmar</button></div
+        ></dialog
+      >
+      <dialog id="npf" class="wd npd" aria-labelledby="npt"
+        ><div class="wdh"
+          ><b id="npt">Novo projeto</b><button id="pxx" title="Fechar" aria-label="Fechar">×</button></div
+        ><div class="npb"
+          ><div class="npl" id="pmodosl"
+            >Formas de cadastro do projeto<div class="modos" id="pmodos" role="radiogroup" aria-label="Formas de cadastro do projeto"
+              ><label><input type="radio" name="pmodo" value="branco" checked /> Novo</label
+              ><label><input type="radio" name="pmodo" value="copia" /> Copiar projeto</label
+              ><label><input type="radio" name="pmodo" value="excel" /> Importar Excel</label></div
+            ></div
+          ><div class="npg2"
+            ><label class="npl"
+              >Nome do projeto<input id="pn" placeholder="Digite o nome do projeto (ex.: Edifício JBLUE)" /></label
+            ><label class="npl" id="petl"
+              >Selecione a etapa<select id="pet"></select></label
+            ><label class="npl" id="pcpl"
+              >Projeto a copiar<select id="pcp"></select></label
+            ><label class="npl" id="pfl"
+              >Arquivo Excel<input type="file" id="pf" accept=".xlsx,.xlsm,.xls" /></label
+          ></div
+          ><div id="pdiscs"
+            ><hr /><div class="npl"
+              >Selecione as disciplinas para esta etapa<div class="npdisc" id="pdisc"></div></div
+          ></div
+          ><p class="note" id="pdica" style="margin: 0"></p
+          ><p class="note r" id="pmsg" style="margin: 0"></p
+        ></div
+        ><div class="npfoot"><button id="px">Cancelar</button><button class="p" id="pc">Criar projeto</button></div
+      ></dialog>
+      <dialog id="wd" class="wd"
+        ><div class="wdh"
+          ><b id="wdt"></b><button data-dclose title="Fechar" aria-label="Fechar">×</button></div
+        ><div id="wdb"></div
+      ></dialog>
+      <div id="etp" hidden>
+        <header class="dhd"
+          ><div class="dtit"
+            ><nav class="bc" aria-label="Caminho"
+              ><button class="lnk" id="eback">Projetos</button><span aria-hidden="true">›</span
+              ><b id="ebcp"></b></nav
+            ><h1><span id="enm"></span> <small id="esub">· Etapas do projeto</small></h1></div
+          ><div class="dact"
+            ><span class="dd"
+              ><button data-dd aria-haspopup="menu" aria-expanded="false">⤓ Exportar ▾</button
+              ><div class="ddm" role="menu" hidden
+                ><button data-exp="pdf" role="menuitem">📄 PDF do projeto</button
+                ><button data-exp="xlsx" role="menuitem">📊 Excel do projeto</button></div
+              ></span
+            ><button data-hrs title="Horas trabalhadas por dia, semana e mês">Horas trabalhadas</button
+            ><button data-dlg="hist" title="Estimado versus real nos projetos">Histórico</button
+            ><span class="dd"
+              ><button data-dd aria-haspopup="menu" aria-expanded="false">⚙ Configurações ▾</button
+              ><div class="ddm cfg" role="menu" hidden
+                ><div class="ddt">Este projeto</div
+                ><label class="ddi"
+                  >Horas por dia
+                  <input id="ehd" type="number" min="1" max="12" step="0.5" aria-label="Horas produtivas por dia"
+                /></label
+                ><button data-dlg="pe" role="menuitem">Responsáveis <span class="ddk" id="epecnt"></span></button
+                ><button data-dlg="std" role="menuitem">Status das atividades</button
+                ><button data-dlg="cal" role="menuitem">Calendário e feriados</button
+                ><div class="dds"></div
+                ><div class="ddt">Geral</div
+                ><button data-dlg="cad" role="menuitem">Cadastros</button
+                ><button data-dlg="tpl" role="menuitem">Modelos</button
+                ><button data-dlg="gcal" role="menuitem">Google Agenda <span class="ddk gcalst"></span></button
+                ><button data-dlg="kbd" role="menuitem">Atalhos de teclado</button
+                ><button data-thm data-ddkeep role="menuitem">Tema <span class="ddk thm2"></span></button></div
+              ></span
+            ></div
+          ></header
+        >
+        <section class="geral" aria-label="Etapas e disciplinas"
+          ><h2 class="hrow"
+            ><span id="eth">Etapas</span
+            ><span class="dd"
+              ><button class="p" data-dd aria-haspopup="true" aria-expanded="false" id="eadd">+ Etapa ▾</button
+              ><div class="ddm cadm" id="enf" hidden
+                ><div class="ddt">Adicionar etapa</div
+                ><select id="ds" aria-label="Etapa do cadastro"></select
+                ><input id="dn2" placeholder="Nome da etapa (ex.: Projeto Básico)" aria-label="Nome da etapa" hidden
+                /><button class="p" id="da" data-ddkeep>+ Adicionar etapa</button
+                ><span class="note" id="enfm" style="margin: 0"></span></div
+              ></span
+            ></h2
+          ><div class="sc"><table id="et" class="ett"></table></div
+        ></section>
+        <section class="geral" aria-label="Cronograma das etapas" id="egs"
+          ><h2
+            ><button class="lnk tgr" id="tgcg" aria-expanded="true" aria-controls="eg"
+              ><span id="tgcgi">▾</span> Cronograma das etapas</button
+            ></h2
+          ><div id="eg"></div
+        ></section>
+        <p class="note" id="emsg"></p>
+        <div id="eal"></div>
+      </div>
+      <div id="proj" hidden>
+        <div class="alerts none" id="imp" hidden></div>
+        <header class="dhd"
+          ><div class="dtit"
+            ><nav class="bc" aria-label="Caminho"
+              ><button class="lnk" id="bchome">Projetos</button><span aria-hidden="true">›</span
+              ><button class="lnk" id="back" title="Voltar para as etapas do projeto"></button
+              ><span aria-hidden="true">›</span><span id="bcet"></span><span aria-hidden="true">›</span
+              ><b id="bcdi"></b></nav
+            ><h1><span id="pnm"></span> <small id="sub"></small></h1></div
+          ><div class="dact"
+            ><span class="grpb"
+              ><button id="un" class="ico" title="Desfazer (Ctrl+Z)" aria-label="Desfazer">↶</button
+              ><button id="rd" class="ico" title="Refazer (Ctrl+Y)" aria-label="Refazer">↷</button></span
+            ><span class="dd"
+              ><button data-dd aria-haspopup="menu" aria-expanded="false">⤓ Exportar ▾</button
+              ><div class="ddm" role="menu" hidden
+                ><button id="expp" role="menuitem">📄 PDF do projeto</button
+                ><button id="expx" role="menuitem">📊 Excel do projeto</button></div
+              ></span
+            ><button data-hrs title="Horas trabalhadas por dia, semana e mês">Horas trabalhadas</button
+            ><button data-dlg="hist" title="Estimado versus real nos projetos">Histórico</button
+            ><span class="dd"
+              ><button data-dd aria-haspopup="menu" aria-expanded="false">⚙ Configurações ▾</button
+              ><div class="ddm cfg" role="menu" hidden
+                ><div class="ddt">Este projeto</div
+                ><label class="ddi"
+                  >Horas por dia
+                  <input id="hd" type="number" min="1" max="12" step="0.5" aria-label="Horas produtivas por dia"
+                /></label
+                ><button data-dlg="pe" role="menuitem">Responsáveis <span class="ddk" id="pecnt"></span></button
+                ><button data-dlg="std" role="menuitem">Status das atividades</button
+                ><button data-dlg="cal" role="menuitem">Calendário e feriados</button
+                ><div class="dds"></div
+                ><div class="ddt">Geral</div
+                ><button data-dlg="cad" role="menuitem">Cadastros</button
+                ><button data-dlg="tpl" role="menuitem">Modelos</button
+                ><button data-dlg="gcal" role="menuitem">Google Agenda <span class="ddk gcalst"></span></button
+                ><button data-dlg="kbd" role="menuitem">Atalhos de teclado</button
+                ><button data-thm data-ddkeep role="menuitem">Tema <span class="ddk thm2"></span></button></div
+              ></span
+            ></div
+          ></header
+        >
+        <div class="dtabs" id="tabs"></div>
+        <section class="geral" id="geral" aria-label="Resumo geral da etapa"
+          ><h2
+            ><button class="lnk tgr" id="tgger" aria-expanded="true" aria-controls="gtw"
+              ><span id="tggi">▾</span> Resumo geral da etapa</button
+            ></h2
+          ><div class="sc" id="gtw"><table id="gt"></table></div
+        ></section>
+        <div class="flt tbar" id="plb"
+          ><button id="selm" title="Selecionar várias atividades para alterar de uma vez">☐ Selecionar</button
+          ><button id="sortp" title="Mostrar as atividades ordenadas por prioridade: Alta, Média e Baixa"
+            >⇅ Ordenar por prioridade</button
+          ><button id="pend" title="Trazer para esta disciplina as atividades não concluídas de outra etapa"
+            >↧ Puxar pendências</button
+          ><span class="dd"
+            ><button data-dd aria-haspopup="true" aria-expanded="false" title="Atividades do cadastro">📋 Cadastro ▾</button
+            ><div class="ddm l cadm" id="scb" hidden
+              ><div class="ddt">Atividades do cadastro</div
+              ><select id="scs" aria-label="Disciplina do cadastro"></select
+              ><button id="scl" data-ddkeep>Carregar as atividades que faltam</button
+              ><button id="scsv" data-ddkeep title="Salvar as atividades do Escopo + Geral desta disciplina no cadastro"
+                >💾 Salvar o Escopo + Geral no cadastro</button
+              ><span class="note" id="scm" style="margin: 0"></span></div
+          ></span
+          ><span class="sp"></span><span class="lab">Exibir</span
+          ><span class="grpb"
+            ><button id="colall" class="ico" title="Recolher tudo: mostrar só os pavimentos" aria-label="Recolher tudo">⊟</button
+            ><button id="expall" class="ico" title="Expandir tudo: mostrar todas as atividades" aria-label="Expandir tudo">⊞</button></span
+          ><button id="hidec" class="ico" aria-label="Recolher comentários">💬</button></div
+        >
+        <div class="flt" id="bar" hidden
+          ><b id="barn">0 selecionadas</b><button id="selall">Selecionar visíveis</button
+          ><button id="selnone">Limpar seleção</button>
+          <select id="bst" aria-label="Status em lote"></select
+          ><button id="bstb">Aplicar status</button>
+          <select id="brs" aria-label="Responsável em lote"></select
+          ><button id="brsb">Aplicar responsável</button>
+          <select id="bpr" aria-label="Prioridade em lote"></select
+          ><button id="bprb">Aplicar prioridade</button>
+          <label class="note" style="margin: 0">Conclusão <input type="date" id="bdc" /></label
+          ><button id="bdcb">Aplicar conclusão</button>
+          <button id="bdel" title="Excluir as atividades selecionadas">Excluir selecionadas</button></div
+        >
+        <div id="bl"></div>
+        <div class="addb"
+          ><input
+            id="nb"
+            placeholder="Nome do novo pavimento (ex.: 9º Pavimento, Ático)"
+            aria-label="Nome do novo pavimento"
+          /><button class="p" id="addb">+ Pavimento</button
+          ><select id="nbt" aria-label="Modelo de pavimento" style="max-width: 260px"></select
+          ><button id="addbt" title="Adicionar um pavimento salvo como modelo"
+            >+ Pavimento do modelo</button
+          ></div
+        >
+        <div id="al" style="margin-top: 14px"></div>
+      </div>
+      <p class="note" id="sv"></p>
+    </main>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf-lib/1.17.1/pdf-lib.min.js"></script>
+    <!-- site:inicio (só no site próprio; sai na versão do claude.ai) -->
+    <script src="https://www.gstatic.com/firebasejs/10.14.1/firebase-app-compat.js"></script>
+    <script src="https://www.gstatic.com/firebasejs/10.14.1/firebase-auth-compat.js"></script>
+    <script src="https://www.gstatic.com/firebasejs/10.14.1/firebase-firestore-compat.js"></script>
+    <script src="config.js"></script>
+    <script src="js/site.js"></script>
+    <!-- site:fim -->
+    <script src="js/nucleo.js"></script>
+    <script src="js/acoes.js"></script>
+    <script src="js/menus.js"></script>
+    <script src="js/estrutura.js"></script>
+    <script src="js/dados.js"></script>
+    <script src="js/modelos.js"></script>
+    <script src="js/cadastros.js"></script>
+    <script src="js/calendario.js"></script>
+    <script src="js/projetos.js"></script>
+    <script src="js/atividades.js"></script>
+    <script src="js/cronometro.js"></script>
+    <script src="js/horas.js"></script>
+    <script src="js/agenda.js"></script>
+    <script src="js/historico.js"></script>
+    <script src="js/importar.js"></script>
+    <script src="js/exportar.js"></script>
+    <script src="js/janelas.js"></script>
+    <script src="js/backup.js"></script>
+    <script src="js/iniciar.js"></script></body
+  ></html
+>

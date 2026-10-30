@@ -1,0 +1,9 @@
+rules_version = '2';
+// Cada pessoa só lê e grava os próprios dados (users/<id do login>/...).
+service cloud.firestore {
+  match /databases/{database}/documents {
+    match /users/{uid}/{documento=**} {
+      allow read, write: if request.auth != null && request.auth.uid == uid;
+    }
+  }
+}
