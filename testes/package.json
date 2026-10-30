@@ -1,0 +1,16 @@
+{
+  "name": "planejamento-horas-testes",
+  "private": true,
+  "description": "Testes automáticos da ferramenta Planejamento de Horas",
+  "scripts": {
+    "testar": "node funcoes.js",
+    "parcial": "node parcial.js",
+    "desempenho": "node desempenho.js",
+    "tudo": "node funcoes.js && node parcial.js && node desempenho.js"
+  },
+  "dependencies": {
+    "pdf-lib": "1.17.1",
+    "playwright": "^1.50.0",
+    "xlsx": "0.18.5"
+  }
+}
