@@ -12,5 +12,5 @@ window.CONFIG_SITE = {
   },
   // Opcional, para enviar os horários ao Google Agenda (LEIA-ME, passo 5).
   // Ex.: "1234567890-abc123.apps.googleusercontent.com". Deixe "" para não usar a agenda.
-  googleClientId: "",
+  googleClientId: "118183933457-m2jskujjqe11gkceij6hm7fkesuqrmm1.apps.googleusercontent.com",
 };
