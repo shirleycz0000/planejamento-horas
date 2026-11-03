@@ -177,8 +177,11 @@ function desenharHoras() {
 
 // ---------- Agenda: blocos de horário do período ----------
 // Cada sessão do cronômetro (ss) vira um bloco "08:00–10:00 · Projeto" (só o projeto, sem
-// etapa nem atividade). Sessões seguidas do mesmo projeto (até 5 min de intervalo) se juntam.
+// etapa nem atividade). Sessões seguidas do mesmo projeto (até 6 min de intervalo, sem outro projeto no meio) se juntam.
 // Horas lançadas à mão não têm horário e ficam de fora.
+
+// Pausa máxima entre dois usos do mesmo projeto para virarem um bloco só (aqui e no Google Agenda)
+const JUNTAR_AGENDA_MS = 6 * 60000;
 
 function blocosAgenda() {
   const [a, b] = intervaloPeriodo(),
@@ -209,7 +212,7 @@ function blocosAgenda() {
       !s.rodando &&
       u.chave === chave &&
       diaDe(u.t0) === diaDe(s.t0) &&
-      s.t0 - u.t1 <= 5 * 60000
+      s.t0 - u.t1 <= JUNTAR_AGENDA_MS
     )
       u.t1 = Math.max(u.t1, s.t1);
     else

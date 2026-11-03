@@ -3,28 +3,46 @@
 //
 // O botão "📅 Vincular Google Agenda" da tela inicial pede a permissão do conector; o
 // login (e-mail e senha) acontece na tela do próprio Google, nunca nesta ferramenta.
-// Depois de vinculado, cada uso do cronômetro (ao pausar ou trocar de atividade) vira um
+// Depois de vinculado, cada uso do cronômetro (ao pausar ou trocar de atividade) vai para um
 // evento particular na agenda principal, só com o nome do projeto: "⏱ Edifício JBLUE".
 // O formato do evento é lido do próprio conector (describeTool) na hora de vincular.
 //
-// Fica guardado só neste navegador ("phgcal"): ligado, fila de envio e falhas.
+// Blocos: usos seguidos do MESMO projeto, com pausa de até 6 min (JUNTAR_AGENDA_MS) e sem
+// outro projeto no meio, ficam num evento só, que vai sendo esticado (update_event) a cada
+// pausa. Trocar de atividade dentro do projeto não quebra o bloco; outro projeto, uma pausa
+// maior ou a virada do dia começam um bloco novo. Sem update_event (conector que não tem),
+// cada uso vira um evento, como antes.
+//
+// Fica guardado só neste navegador ("phgcal"): ligado, bloco aberto (bloco), ids dos eventos
+// criados (ids: chave do bloco → id no Google), fila de envio e falhas.
+// Itens da fila: { k: chave do bloco, op: "criar" | "atualizar", p, t0, t1 }.
 
 const SERVIDOR_AGENDA = "Google Calendar",
   // nomes possíveis da ferramenta de criar evento (o primeiro que o conector tiver é usado)
   FERRAMENTAS_AGENDA = ["create_event", "gcal_create_event", "create_calendar_event"],
+  FERRAMENTAS_ATUALIZAR = ["update_event", "gcal_update_event", "patch_event", "update_calendar_event"],
   CHAVE_AGENDA = "phgcal",
   MINIMO_AGENDA = 60000; // usos de menos de 1 minuto não vão para a agenda
 
 let ferramentaAgenda = null,
-  agenda = { ligado: false, pendentes: [], falhas: [], enviados: [], erro: "" },
+  ferramentaAtualizar = null, // null: o conector não sabe atualizar evento (cada uso vira um evento)
+  agenda = { ligado: false, pendentes: [], falhas: [], enviados: [], erro: "", bloco: null, ids: {} },
   esquemaAgenda = null,
+  esquemaAtualizar = null,
   enviandoAgenda = false;
 try {
   Object.assign(agenda, JSON.parse(localStorage.getItem(CHAVE_AGENDA) || "{}"));
 } catch (e) {}
 
+agenda.ids = agenda.ids || {};
+agenda.pendentes.forEach((x) => delete x.emEnvio); // a página fechou no meio de um envio
+
 const salvarAgendaLocal = () => {
   agenda.enviados = agenda.enviados.slice(-50);
+  // só guarda os ids dos blocos que ainda podem ser citados (enviados recentes e fila)
+  const vivos = new Set([...agenda.enviados, ...agenda.pendentes, ...agenda.falhas].map((x) => x.k));
+  if (agenda.bloco) vivos.add(agenda.bloco.k);
+  for (const k in agenda.ids) if (!vivos.has(k)) delete agenda.ids[k];
   try {
     localStorage.setItem(CHAVE_AGENDA, JSON.stringify(agenda));
   } catch (e) {}
@@ -169,6 +187,15 @@ async function prepararFerramentaAgenda(mcp) {
   if (srv.authStatus === "needs_reauth") throw { code: "needs_reauth" };
   const nomes = (srv.tools || []).map((t) => t.name);
   ferramentaAgenda = FERRAMENTAS_AGENDA.find((n) => nomes.includes(n)) || FERRAMENTAS_AGENDA[0];
+  ferramentaAtualizar = FERRAMENTAS_ATUALIZAR.find((n) => nomes.includes(n)) || null;
+  esquemaAtualizar = null;
+  if (ferramentaAtualizar)
+    try {
+      esquemaAtualizar = (await mcp.describeTool(SERVIDOR_AGENDA, ferramentaAtualizar)).inputSchema || null;
+    } catch (e) {}
+  // só junta blocos se der para dizer ao conector qual evento atualizar
+  const pa = (esquemaAtualizar && esquemaAtualizar.properties) || {};
+  if (!["event_id", "eventId", "id"].some((k) => k in pa)) ferramentaAtualizar = null;
   try {
     esquemaAgenda =
       (await mcp.describeTool(SERVIDOR_AGENDA, ferramentaAgenda)).inputSchema || ESQUEMA_PADRAO_AGENDA;
@@ -208,11 +235,81 @@ async function vincularAgenda() {
 
 // Chamado quando o cronômetro termina um uso (pausa, troca de atividade, concluir…)
 function agendaSessao(pid, t0, t1) {
-  if (!agenda.ligado || !(t1 - t0 >= MINIMO_AGENDA)) return;
-  const pj = projetos[pid];
-  agenda.pendentes.push({ p: pj ? pj.name : "Projeto", t0: Math.round(t0), t1: Math.round(t1) });
+  if (!agenda.ligado) return;
+  t0 = Math.round(t0);
+  t1 = Math.round(t1);
+  const pj = projetos[pid],
+    p = pj ? pj.name : "Projeto",
+    b = agenda.bloco;
+  // continua o bloco aberto: mesmo projeto, pausa curta, mesmo dia
+  if (b && b.pid === pid && t0 - b.t1 <= JUNTAR_AGENDA_MS && t0 >= b.t0 && diaDe(t0) === diaDe(b.t0)) {
+    if (t1 <= b.t1) return;
+    b.t1 = t1;
+    b.p = p;
+    juntarNaFila(b);
+  } else {
+    // outro projeto (mesmo um uso curto) fecha o bloco anterior
+    agenda.bloco = null;
+    if (!(t1 - t0 >= MINIMO_AGENDA)) return void salvarAgendaLocal();
+    const k = "b" + t0.toString(36) + Math.random().toString(36).slice(2, 5);
+    agenda.bloco = { k, pid, p, t0, t1 };
+    agenda.pendentes.push({ k, op: "criar", p, t0, t1 });
+  }
   salvarAgendaLocal();
   enviarPendentesAgenda();
+}
+
+// O bloco cresceu: ajusta o que ainda não foi enviado ou pede para atualizar o evento
+function juntarNaFila(b) {
+  // o item que está sendo enviado agora não muda (o pedido já saiu); entra uma atualização depois dele
+  const naFila = [...agenda.pendentes, ...agenda.falhas].find((x) => x.k === b.k && !x.emEnvio),
+    saindo = agenda.pendentes.some((x) => x.k === b.k && x.emEnvio);
+  if (naFila) {
+    naFila.t0 = b.t0;
+    naFila.t1 = b.t1;
+    naFila.p = b.p;
+    return;
+  }
+  if ((agenda.ids[b.k] || saindo) && ferramentaAtualizarDisponivel())
+    agenda.pendentes.push({ k: b.k, op: "atualizar", p: b.p, t0: b.t0, t1: b.t1 });
+  else {
+    // conector sem atualização (ou evento sem id): o pedaço novo vira um evento próprio
+    const k = "b" + b.t1.toString(36) + Math.random().toString(36).slice(2, 5),
+      ult = agenda.enviados.filter((x) => x.k === b.k).pop(),
+      ini = ult ? ult.t1 : b.t0;
+    agenda.bloco = { ...b, k, t0: ini };
+    agenda.pendentes.push({ k, op: "criar", p: b.p, t0: ini, t1: b.t1 });
+  }
+}
+
+// Antes de vincular nesta sessão do navegador ainda não se sabe; supõe que sim (o site tem)
+const ferramentaAtualizarDisponivel = () => (esquemaAgenda ? !!ferramentaAtualizar : true);
+
+// Acha o id do evento criado na resposta do conector
+function idDoEvento(r) {
+  const cands = [r && r.payload, r && r.structuredContent, r && r.result];
+  for (const c of cands)
+    if (c && typeof c === "object" && typeof (c.id || c.event_id || c.eventId) === "string")
+      return c.id || c.event_id || c.eventId;
+  try {
+    const t = ((r && r.content) || []).map((x) => x.text || "").join(" "),
+      j = JSON.parse(t);
+    if (j && typeof j.id === "string") return j.id;
+  } catch (e) {}
+  return null;
+}
+
+function montarAtualizacao(s) {
+  const base = montarEvento(esquemaAgenda, "⏱ " + s.p, s.t0, s.t1),
+    pa = (esquemaAtualizar && esquemaAtualizar.properties) || {},
+    entrada = {},
+    kId = ["event_id", "eventId", "id"].find((k) => k in pa);
+  entrada[kId] = agenda.ids[s.k];
+  // manda só o que muda (início, fim) e o que o conector exige (agenda)
+  for (const k in base)
+    if (k in pa && !/summary|title|name|subject|description|details|notes|visibility/.test(k))
+      entrada[k] = base[k];
+  return entrada;
 }
 
 async function enviarPendentesAgenda() {
@@ -224,19 +321,53 @@ async function enviarPendentesAgenda() {
     if (!esquemaAgenda) await prepararFerramentaAgenda(mcp);
     while (agenda.pendentes.length) {
       const s = agenda.pendentes[0];
+      if (!s.k) s.k = "b" + s.t0.toString(36); // fila de versões antigas
+      const atualizar = !!(s.op === "atualizar" && agenda.ids[s.k] && ferramentaAtualizar);
+      if (s.op === "atualizar" && !atualizar) {
+        // não dá para esticar o evento: só o pedaço que ainda não está na agenda vira um evento novo
+        const ult = agenda.enviados.filter((x) => x.k === s.k).pop(),
+          k = "b" + s.t1.toString(36) + Math.random().toString(36).slice(2, 5);
+        if (ult) s.t0 = Math.max(s.t0, ult.t1);
+        if (agenda.bloco && agenda.bloco.k === s.k) agenda.bloco = { ...agenda.bloco, k, t0: s.t0 };
+        s.k = k;
+        s.op = "criar";
+        if (!(s.t1 > s.t0)) {
+          agenda.pendentes.shift();
+          continue;
+        }
+      }
+      s.emEnvio = true;
       try {
-        await mcp.callTool(
+        const r = await mcp.callTool(
           SERVIDOR_AGENDA,
-          ferramentaAgenda,
-          montarEvento(esquemaAgenda, "⏱ " + s.p, s.t0, s.t1),
-          {
-            cache: false,
-          },
+          atualizar ? ferramentaAtualizar : ferramentaAgenda,
+          atualizar ? montarAtualizacao(s) : montarEvento(esquemaAgenda, "⏱ " + s.p, s.t0, s.t1),
+          { cache: false },
         );
-        agenda.enviados.push(s);
+        if (!atualizar) {
+          const id = idDoEvento(r);
+          if (id) agenda.ids[s.k] = id;
+        }
+        // o bloco aparece uma vez só em "Últimos enviados", com o horário mais recente
+        agenda.enviados = agenda.enviados.filter((x) => x.k !== s.k);
+        agenda.enviados.push({ k: s.k, p: s.p, t0: s.t0, t1: s.t1 });
         agenda.erro = "";
+        delete s.emEnvio;
       } catch (e) {
+        delete s.emEnvio;
         if (erroAntesDoEnvio(e && e.code)) throw e; // fica na fila
+        if (atualizar && e && e.code !== "tool_error") {
+          // atualizar de novo com o mesmo horário não duplica nada: fica na fila para tentar depois
+          agenda.erro = mensagemErroAgenda(e);
+          salvarAgendaLocal();
+          break;
+        }
+        if (atualizar) {
+          // o evento sumiu da agenda (ex.: apagado à mão): cria o bloco de novo
+          delete agenda.ids[s.k];
+          s.op = "criar";
+          continue;
+        }
         // resultado incerto (o evento pode ter sido criado): só reenvia se você pedir
         agenda.falhas.push(s);
         agenda.erro = mensagemErroAgenda(e);
@@ -288,14 +419,21 @@ function janelaAgenda() {
   const ult = agenda.enviados.slice(-5).reverse();
   return [
     "Google Agenda",
-    `<p class="note" style="margin:0">Com a agenda vinculada, cada vez que você usa o cronômetro o horário vai para o seu Google Agenda como um <b>evento particular</b>, só com o <b>nome do projeto</b> (ex.: “⏱ Edifício JBLUE · 08:00–10:00”). Vale para a ferramenta inteira. O login é feito na tela do Google; a ferramenta nunca vê o seu e-mail nem a sua senha.</p>` +
+    `<p class="note" style="margin:0">Com a agenda vinculada, cada vez que você usa o cronômetro o horário vai para o seu Google Agenda como um <b>evento particular</b>, só com o <b>nome do projeto</b> (ex.: “⏱ Edifício JBLUE · 08:00–10:00”). Usos seguidos do mesmo projeto, com pausas de até 6 min, viram <b>um bloco só</b> (ex.: o turno da manhã). Vale para a ferramenta inteira. O login é feito na tela do Google; a ferramenta nunca vê o seu e-mail nem a sua senha.</p>` +
       `<div class="df" style="justify-content:flex-start;flex-wrap:wrap"><b>Situação:</b> ${
         agenda.ligado ? '<span class="stc ok">Vinculada</span>' : '<span class="stc mut">Não vinculada</span>'
+      }${
+        agenda.ligado && window.contaAgenda && window.contaAgenda()
+          ? ` <span class="note" style="margin:0">· agenda de <b>${escaparHtml(window.contaAgenda())}</b></span>`
+          : ""
       }</div>` +
+      (agenda.ligado && SITE
+        ? `<p class="note" style="margin:0">Para usar a agenda de outro e-mail, clique em <b>Desvincular</b> e depois em <b>Vincular Google Agenda</b>, e escolha a outra conta na janela do Google.</p>`
+        : "") +
       (agenda.ligado
         ? ""
         : SITE
-          ? `<ol class="note" style="margin:0;padding-left:18px"><li>Clique em <b>Vincular Google Agenda</b>.</li><li>Na janela do Google, escolha a conta da sua agenda (entre com o <b>e-mail e a senha</b> do Google, se pedir) e permita o acesso ao <b>Google Agenda</b>.</li><li>Pronto: ao pausar ou trocar de atividade no cronômetro, o horário aparece na sua agenda.</li></ol>`
+          ? `<ol class="note" style="margin:0;padding-left:18px"><li>Clique em <b>Vincular Google Agenda</b>.</li><li>Na janela do Google, escolha a conta da agenda — pode ser um e-mail diferente do login do site (use “Usar outra conta”, se ela não aparecer) — e permita o acesso ao <b>Google Agenda</b>.</li><li>Pronto: ao pausar ou trocar de atividade no cronômetro, o horário aparece na sua agenda.</li></ol>`
           : `<ol class="note" style="margin:0;padding-left:18px"><li>No claude.ai, abra <b>Configurações → Conectores</b> e conecte o <b>Google Agenda</b>. Lá você entra com o <b>e-mail e a senha</b> do seu Google, na tela do próprio Google.</li><li>Volte aqui e clique em <b>Vincular Google Agenda</b>; permita o acesso quando o claude.ai perguntar.</li><li>Pronto: ao pausar ou trocar de atividade no cronômetro, o horário aparece na sua agenda.</li></ol>`) +
       (agenda.erro
         ? `<p class="note" style="margin:0;color:var(--bad)">${escaparHtml(agenda.erro)}</p>`
@@ -330,6 +468,8 @@ acao(
     agenda.ligado = false;
     agenda.erro = "";
     agenda.pendentes = [];
+    agenda.bloco = null;
+    if (window.esquecerContaAgenda) window.esquecerContaAgenda(); // a próxima vinculação pede a conta de novo
     salvarAgendaLocal();
     desenharBotaoAgenda();
     desenharJanela();
@@ -339,7 +479,7 @@ acao(
 acao(
   "data-gcre",
   () => {
-    agenda.pendentes.push(...agenda.falhas);
+    agenda.pendentes.push(...agenda.falhas.map((x) => ({ ...x, op: "criar" })));
     agenda.falhas = [];
     salvarAgendaLocal();
     enviarPendentesAgenda();

@@ -17,7 +17,8 @@
   window.SITE_PROPRIO = true;
 
   // Chaves do navegador que guardam dados de um usuário (o tema fica)
-  const CHAVES_DO_USUARIO = /^(ph|phs2|phtpl|phcad|phcad-ini|phcad3|phcad3-ini|phcopias|phgcal)$/;
+  const CHAVES_DO_USUARIO =
+    /^(ph|phs2|phtpl|phcad|phcad-ini|phcad3|phcad3-ini|phcopias|phgcal|phgcal-conta)$/;
   function limparDadosLocais() {
     try {
       Object.keys(localStorage)
@@ -87,7 +88,8 @@
       "Este endereço não está autorizado no Firebase (Authentication → Configurações → Domínios autorizados).",
     "auth/user-disabled": "Esta conta foi desativada.",
     "auth/invalid-api-key": "A apiKey do config.js está errada. Confira letra por letra com a do Firebase.",
-    "auth/api-key-not-valid.-please-pass-a-valid-api-key.": "A apiKey do config.js está errada. Confira letra por letra com a do Firebase.",
+    "auth/api-key-not-valid.-please-pass-a-valid-api-key.":
+      "A apiKey do config.js está errada. Confira letra por letra com a do Firebase.",
   };
   const erroLogin = (e) =>
     e && e.code in ERROS
@@ -266,6 +268,40 @@
 
   const erro = (code, message) => Object.assign(new Error(message || code), { code });
 
+  // Conta Google da agenda: pode ser diferente do e-mail do login do site
+  const lerConta = () => {
+    try {
+      return localStorage.getItem("phgcal-conta") || "";
+    } catch (e) {
+      return "";
+    }
+  };
+  window.contaAgenda = lerConta;
+  window.esquecerContaAgenda = () => {
+    if (token && window.google && google.accounts && google.accounts.oauth2)
+      try {
+        google.accounts.oauth2.revoke(token, () => {});
+      } catch (e) {}
+    token = null;
+    validade = 0;
+    try {
+      localStorage.removeItem("phgcal-conta");
+      sessionStorage.removeItem("phgtok");
+    } catch (e) {}
+  };
+  // Descobre o e-mail da agenda principal da conta autorizada (o id dela é o e-mail)
+  async function guardarConta(tk) {
+    try {
+      const r = await fetch("https://www.googleapis.com/calendar/v3/calendars/primary", {
+        headers: { Authorization: "Bearer " + tk },
+      });
+      if (r.ok) {
+        const c = await r.json();
+        if (c && c.id) localStorage.setItem("phgcal-conta", c.id);
+      }
+    } catch (e) {}
+  }
+
   function carregarGoogle() {
     if (window.google && google.accounts && google.accounts.oauth2) return Promise.resolve();
     return new Promise((ok, falha) => {
@@ -278,15 +314,16 @@
   }
 
   // Pede um token da agenda ao Google; interativo = pode mostrar a tela de permissão
+  // interativo: abre a escolha de conta do Google (pode ser outra conta, diferente do login do site)
   async function pedirToken(interativo) {
-    if (token && validade > Date.now() + 60000) return token;
+    if (!interativo && token && validade > Date.now() + 60000) return token;
     if (!cfg.googleClientId) throw erro("server_not_connected");
     await carregarGoogle();
     return new Promise((ok, falha) => {
       clienteToken = google.accounts.oauth2.initTokenClient({
         client_id: cfg.googleClientId,
         scope: ESCOPO_AGENDA,
-        hint: usuario && usuario.email ? usuario.email : undefined,
+        hint: interativo ? undefined : lerConta() || undefined,
         callback: (r) => {
           if (r && r.access_token) {
             token = r.access_token;
@@ -294,12 +331,13 @@
             try {
               sessionStorage.setItem("phgtok", JSON.stringify({ t: token, v: validade }));
             } catch (e) {}
-            ok(token);
+            if (interativo) guardarConta(token).then(() => ok(token));
+            else ok(token);
           } else falha(erro(interativo ? "consent_required" : "needs_reauth"));
         },
         error_callback: () => falha(erro(interativo ? "consent_required" : "needs_reauth")),
       });
-      clienteToken.requestAccessToken({ prompt: interativo ? "consent" : "" });
+      clienteToken.requestAccessToken({ prompt: interativo ? "select_account consent" : "" });
     });
   }
 
@@ -316,17 +354,25 @@
     required: ["summary", "start", "end"],
   };
 
-  async function criarEvento(input) {
+  // create_event: POST de um evento novo; update_event: PATCH (só os campos enviados) do evento event_id
+  async function criarEvento(input, atualizar) {
     const tk = await pedirToken(false);
-    const { calendar_id, ...corpo } = input,
+    const { calendar_id, event_id, ...corpo } = input,
       agenda = encodeURIComponent(calendar_id || "primary");
+    if (atualizar && !event_id) throw erro("bad_request", "falta o event_id");
     let r;
     try {
-      r = await fetch("https://www.googleapis.com/calendar/v3/calendars/" + agenda + "/events", {
-        method: "POST",
-        headers: { Authorization: "Bearer " + tk, "Content-Type": "application/json" },
-        body: JSON.stringify(corpo),
-      });
+      r = await fetch(
+        "https://www.googleapis.com/calendar/v3/calendars/" +
+          agenda +
+          "/events" +
+          (atualizar ? "/" + encodeURIComponent(event_id) : ""),
+        {
+          method: atualizar ? "PATCH" : "POST",
+          headers: { Authorization: "Bearer " + tk, "Content-Type": "application/json" },
+          body: JSON.stringify(corpo),
+        },
+      );
     } catch (e) {
       throw erro("upstream_error", "sem resposta do Google");
     }
@@ -350,16 +396,32 @@
   const mcp = {
     listTools: async () => ({
       servers: [
-        { server: SERVIDOR, authStatus: "connected", tools: [{ name: "create_event", description: "" }] },
+        {
+          server: SERVIDOR,
+          authStatus: "connected",
+          tools: [
+            { name: "create_event", description: "" },
+            { name: "update_event", description: "" },
+          ],
+        },
       ],
     }),
     describeTool: async (s, t) => {
-      if (s !== SERVIDOR || t !== "create_event") throw erro("bad_request");
+      if (s !== SERVIDOR || (t !== "create_event" && t !== "update_event")) throw erro("bad_request");
+      if (t === "update_event")
+        return {
+          name: t,
+          inputSchema: {
+            ...ESQUEMA_EVENTO,
+            properties: { event_id: { type: "string" }, ...ESQUEMA_EVENTO.properties },
+            required: ["event_id"],
+          },
+        };
       return { name: t, inputSchema: ESQUEMA_EVENTO };
     },
     callTool: async (s, t, input) => {
-      if (s !== SERVIDOR || t !== "create_event") throw erro("not_in_manifest");
-      return criarEvento(input);
+      if (s !== SERVIDOR || (t !== "create_event" && t !== "update_event")) throw erro("not_in_manifest");
+      return criarEvento(input, t === "update_event");
     },
   };
   const permissoes = {
