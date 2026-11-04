@@ -2098,3 +2098,33 @@ body.sem-login main {
     flex-wrap: wrap;
   }
 }
+.gsteps li {
+  margin-bottom: 6px;
+}
+#gscode {
+  display: block;
+  width: 100%;
+  box-sizing: border-box;
+  margin-top: 6px;
+  font:
+    12px/1.4 ui-monospace,
+    Consolas,
+    monospace;
+  background: var(--bg);
+  color: var(--ink);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  padding: 6px 8px;
+  resize: vertical;
+}
+#gsurl {
+  flex: 1;
+  min-width: 0;
+}
+.gsatu {
+  border: 1px solid var(--warn);
+  border-radius: 8px;
+  padding: 8px 10px;
+  display: grid;
+  gap: 4px;
+}
