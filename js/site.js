@@ -280,28 +280,42 @@
   }
 
   // Manda um pedido ao script. Erros de rede são "incertos" (o evento pode ter sido criado).
+  // Chamada por <script> com callback (JSONP): o navegador não aplica as regras de CORS, que
+  // bloqueavam a resposta do Apps Script em alguns navegadores. Sem resposta = resultado incerto.
+  function chamarJsonp(url, dados) {
+    return new Promise((ok, falha) => {
+      const cb = "__phAgenda" + Date.now().toString(36) + Math.random().toString(36).slice(2, 7),
+        s = document.createElement("script");
+      let fim = false;
+      const acabar = (fn) => {
+        if (fim) return;
+        fim = true;
+        clearTimeout(limite);
+        window[cb] = () => {}; // resposta atrasada não quebra nada
+        setTimeout(() => delete window[cb], 60000);
+        s.remove();
+        fn();
+      };
+      window[cb] = (j) => acabar(() => ok(j));
+      // carregou mas não chamou o callback: o Google devolveu uma página (script antigo, sem doGet)
+      s.onload = () => setTimeout(() => acabar(() => falha(erro("script_invalido"))), 300);
+      s.onerror = () => acabar(() => falha(erro("upstream_error", "sem resposta do Google")));
+      const limite = setTimeout(
+        () => acabar(() => falha(erro("upstream_error", "o Google demorou para responder"))),
+        25000,
+      );
+      s.src = url + "?callback=" + cb + "&d=" + encodeURIComponent(JSON.stringify(dados));
+      document.head.appendChild(s);
+    });
+  }
+
   async function chamarScript(dados, v = vinculo) {
     if (!v || !v.url) throw erro("server_not_connected");
-    let r;
-    try {
-      r = await fetch(v.url, {
-        method: "POST",
-        headers: { "Content-Type": "text/plain;charset=utf-8" }, // pedido simples (sem pré-verificação CORS)
-        body: JSON.stringify({ ...dados, chave: v.chave }),
-      });
-    } catch (e) {
-      throw erro("upstream_error", "sem resposta do Google");
-    }
-    let j = null;
-    try {
-      j = await r.json();
-    } catch (e) {
-      // o Google devolveu uma página em vez do resultado: implantação errada ou sem acesso
-      throw erro("script_invalido");
-    }
+    const j = await chamarJsonp(v.url, { ...dados, chave: v.chave });
     if (!j || !j.ok) {
       if (j && j.erro === "chave") throw erro("script_chave");
       if (j && j.erro === "nao_encontrado") throw erro("tool_error", "o evento não está mais na agenda");
+      if (j && j.erro === "excecao") throw erro("script_excecao", j.mensagem || "erro no script");
       throw erro("tool_error", (j && j.mensagem) || "erro no script");
     }
     return j;
@@ -313,6 +327,8 @@
     pronto: () => vinculoPronto,
     obter: () => vinculo,
     // confere um script novo; devolve a conta (e-mail) da agenda
+    // endereço para abrir numa aba e ver a resposta do script (diagnóstico)
+    linkTeste: (url, chave) => url + "?d=" + encodeURIComponent(JSON.stringify({ acao: "testar", chave })),
     testar: async (url, chave) => {
       const j = await chamarScript({ acao: "testar" }, { url, chave });
       return { conta: j.conta || "", versao: Number(j.versao) || 1 };

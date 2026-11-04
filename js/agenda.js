@@ -137,7 +137,15 @@ function mensagemErroAgenda(e) {
   if (c === "script_chave")
     return "O script não aceitou a chave. Confira se colou o código copiado desta janela (com a chave dele) e implante de novo.";
   if (c === "script_invalido")
-    return "O Google não respondeu como esperado. Confira se a implantação é do tipo App da Web, com “Quem pode acessar: Qualquer pessoa”, e se o URL termina em /exec.";
+    return "O script respondeu com uma página em vez do resultado. Confira se o código no Apps Script é o desta janela (versão 3), se está salvo e se você criou uma Nova versão em Implantar → Gerenciar implantações.";
+  if (c === "script_excecao")
+    return (
+      "O script deu erro no Google: " +
+      (e.message || "") +
+      (/permiss|autoriz|authoriz/i.test(e.message || "")
+        ? " — no editor do Apps Script, escolha a função testar, clique em Executar e autorize."
+        : "")
+    );
   if (SITE && (c === "server_not_connected" || c === "needs_reauth"))
     return "O Google não liberou o acesso à agenda agora. Clique em Vincular Google Agenda (ou Verificar conexão) e escolha a sua conta Google.";
   if (SITE && (c === "consent_required" || c === "not_in_manifest" || c === "approval_required"))
@@ -175,39 +183,64 @@ const erroAntesDoEnvio = (c) =>
     "bad_request",
     "script_chave",
     "script_invalido",
+    "script_excecao",
   ].includes(c);
 
 // ---------- Site próprio: vínculo pelo Google Apps Script ----------
 // A dona da agenda cria, uma vez, um "app da Web" no Google Apps Script com este código (a chave
 // vem preenchida). O site guarda { url, chave, conta } no banco da conta (js/site.js) e não pede
 // mais nada a cada pausa. Trocar o e-mail = desvincular e criar o script na outra conta.
-const codigoScriptAgenda = (chave) => `// Planejamento de Horas → Google Agenda
+const codigoScriptAgenda = (chave) => `// Planejamento de Horas → Google Agenda (versão 3)
 // Cole este código em script.google.com (com o e-mail da agenda) e implante como "App da Web".
 const CHAVE = "${chave}";
 
+// O site chama por GET com callback (funciona em qualquer navegador, sem bloqueio).
+function doGet(e) {
+  const p = (e && e.parameter) || {};
+  return responder(p.d, p.callback);
+}
+
 function doPost(e) {
+  return responder(e && e.postData && e.postData.contents, "");
+}
+
+// Teste no editor: escolha "testar" e clique em Executar (pede a autorização da agenda)
+function testar() {
+  Logger.log(JSON.stringify(executar({ chave: CHAVE, acao: "testar" })));
+}
+
+function responder(texto, callback) {
   let d = {};
-  try { d = JSON.parse(e.postData.contents); } catch (x) {}
-  if (d.chave !== CHAVE) return saida({ ok: false, erro: "chave" });
+  try { d = JSON.parse(texto || "{}"); } catch (x) {}
+  let r;
+  try {
+    r = executar(d);
+  } catch (x) {
+    r = { ok: false, erro: "excecao", mensagem: String((x && x.message) || x) };
+  }
+  const s = JSON.stringify(r);
+  if (callback && /^[\\w$.]+$/.test(callback))
+    return ContentService.createTextOutput(callback + "(" + s + ")").setMimeType(ContentService.MimeType.JAVASCRIPT);
+  return ContentService.createTextOutput(s).setMimeType(ContentService.MimeType.JSON);
+}
+
+function executar(d) {
+  if (d.chave !== CHAVE) return { ok: false, erro: "chave" };
   const agenda = CalendarApp.getDefaultCalendar();
-  if (d.acao === "testar") return saida({ ok: true, conta: agenda.getId(), versao: 2 });
+  if (d.acao === "testar") return { ok: true, conta: agenda.getId(), versao: 3 };
   if (d.acao === "criar") {
     const ev = agenda.createEvent(d.titulo, new Date(d.t0), new Date(d.t1), { description: d.descricao || "" });
     ev.setVisibility(CalendarApp.Visibility.PRIVATE);
-    return saida({ ok: true, id: ev.getId() });
+    return { ok: true, id: ev.getId() };
   }
   if (d.acao === "atualizar") {
     const ev = agenda.getEventById(d.id);
-    if (!ev) return saida({ ok: false, erro: "nao_encontrado" });
+    if (!ev) return { ok: false, erro: "nao_encontrado" };
     ev.setTime(new Date(d.t0), new Date(d.t1));
     if (typeof d.descricao === "string") ev.setDescription(d.descricao);
-    return saida({ ok: true, id: d.id });
+    return { ok: true, id: d.id };
   }
-  return saida({ ok: false, erro: "acao" });
-}
-
-function saida(o) {
-  return ContentService.createTextOutput(JSON.stringify(o)).setMimeType(ContentService.MimeType.JSON);
+  return { ok: false, erro: "acao" };
 }
 `;
 
@@ -246,6 +279,16 @@ function htmlAtualizarScript() {
     `<li><b>Implantar → Gerenciar implantações</b> → ✏️ (editar) → em <b>Versão</b> escolha <b>Nova versão</b> → <b>Implantar</b>. O URL continua o mesmo.</li>` +
     `<li>Volte aqui e clique em <b>Testar conexão</b>.</li></ol></div>`
   );
+}
+
+// Depois de um erro: link para abrir o script numa aba e ver o que ele responde
+function htmlLinkTesteAgenda() {
+  if (!SITE || !window.agendaSite || /…$/.test(agenda.erro)) return "";
+  const v = window.agendaSite.obter(),
+    url = agenda.ligado && v ? v.url : urlNovaAgenda,
+    chave = agenda.ligado && v ? v.chave : chaveNovaAgenda;
+  if (!/^https:\/\/script\.google\.com\/.*\/exec$/.test(url || "")) return "";
+  return `<p class="note" style="margin:0">Para ver o que o script responde, <a href="${escaparHtml(window.agendaSite.linkTeste(url, chave))}" target="_blank" rel="noopener">abra este teste numa aba nova</a>. O certo é aparecer <code>{"ok":true,"conta":"…","versao":3}</code>; se aparecer outra coisa, me mande um print.</p>`;
 }
 
 async function vincularAgendaSite() {
@@ -360,7 +403,7 @@ async function vincularAgenda() {
 
 // Chamado quando o cronômetro termina um uso (pausa, troca de atividade, concluir…)
 const RODAPE_AGENDA = "Registrado pelo Planejamento de Horas",
-  VERSAO_SCRIPT_AGENDA = 2; // versão do código do Apps Script (2: atualiza também a descrição)
+  VERSAO_SCRIPT_AGENDA = 3; // versão do código do Apps Script (2: descrição; 3: GET com callback)
 
 // Nome e status atuais das atividades do bloco (o nome guardado vale se a atividade foi apagada)
 function descricaoAgenda(pid, ats) {
@@ -620,7 +663,8 @@ function janelaAgenda() {
             htmlAssistenteAgenda()
           : `<ol class="note" style="margin:0;padding-left:18px"><li>No claude.ai, abra <b>Configurações → Conectores</b> e conecte o <b>Google Agenda</b>. Lá você entra com o <b>e-mail e a senha</b> do seu Google, na tela do próprio Google.</li><li>Volte aqui e clique em <b>Vincular Google Agenda</b>; permita o acesso quando o claude.ai perguntar.</li><li>Pronto: ao pausar ou trocar de atividade no cronômetro, o horário aparece na sua agenda.</li></ol>`) +
       (agenda.erro
-        ? `<p class="note" style="margin:0;color:var(--bad)">${escaparHtml(agenda.erro)}</p>`
+        ? `<p class="note" style="margin:0;color:var(--bad)">${escaparHtml(agenda.erro)}</p>` +
+          htmlLinkTesteAgenda()
         : "") +
       (agenda.pendentes.length
         ? `<p class="note" style="margin:0">Aguardando envio: ${agenda.pendentes.length} horário(s).</p>`
