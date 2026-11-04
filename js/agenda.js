@@ -15,7 +15,9 @@
 //
 // Fica guardado só neste navegador ("phgcal"): ligado, bloco aberto (bloco), ids dos eventos
 // criados (ids: chave do bloco → id no Google), fila de envio e falhas.
-// Itens da fila: { k: chave do bloco, op: "criar" | "atualizar", p, t0, t1 }.
+// Itens da fila: { k: chave do bloco, op: "criar" | "atualizar", pid, p, t0, t1, ats }.
+// Descrição do evento: as atividades do bloco, uma por linha, "Atividade - Status" (o status de
+// agora; mudou o status ou o nome depois, o evento é atualizado — agendaRevisarDescricao).
 
 const SERVIDOR_AGENDA = "Google Calendar",
   // nomes possíveis da ferramenta de criar evento (o primeiro que o conector tiver é usado)
@@ -77,7 +79,7 @@ function isoLocal(ms) {
 }
 
 // Monta a entrada do create_event a partir do esquema que o conector informa
-function montarEvento(esquema, titulo, t0, t1) {
+function montarEvento(esquema, titulo, t0, t1, desc) {
   const props = (esquema && esquema.properties) || {},
     fuso = Intl.DateTimeFormat().resolvedOptions().timeZone,
     entrada = {},
@@ -104,7 +106,7 @@ function montarEvento(esquema, titulo, t0, t1) {
   const kC = achar(["calendar_id", "calendarId"]);
   if (kC) entrada[kC] = "primary";
   const kD = achar(["description", "details", "notes"]);
-  if (kD) entrada[kD] = "Registrado pelo Planejamento de Horas";
+  if (kD) entrada[kD] = desc || RODAPE_AGENDA;
   const kV = achar(["visibility"]);
   if (kV) {
     const en = (props[kV] || {}).enum;
@@ -130,6 +132,12 @@ const SITE = !!window.SITE_PROPRIO,
 
 function mensagemErroAgenda(e) {
   const c = e && e.code;
+  if (SITE && c === "server_not_connected")
+    return "A agenda não está vinculada. Clique no botão 📅 e vincule.";
+  if (c === "script_chave")
+    return "O script não aceitou a chave. Confira se colou o código copiado desta janela (com a chave dele) e implante de novo.";
+  if (c === "script_invalido")
+    return "O Google não respondeu como esperado. Confira se a implantação é do tipo App da Web, com “Quem pode acessar: Qualquer pessoa”, e se o URL termina em /exec.";
   if (SITE && (c === "server_not_connected" || c === "needs_reauth"))
     return "O Google não liberou o acesso à agenda agora. Clique em Vincular Google Agenda (ou Verificar conexão) e escolha a sua conta Google.";
   if (SITE && (c === "consent_required" || c === "not_in_manifest" || c === "approval_required"))
@@ -165,7 +173,124 @@ const erroAntesDoEnvio = (c) =>
     "capability_removed",
     "formato",
     "bad_request",
+    "script_chave",
+    "script_invalido",
   ].includes(c);
+
+// ---------- Site próprio: vínculo pelo Google Apps Script ----------
+// A dona da agenda cria, uma vez, um "app da Web" no Google Apps Script com este código (a chave
+// vem preenchida). O site guarda { url, chave, conta } no banco da conta (js/site.js) e não pede
+// mais nada a cada pausa. Trocar o e-mail = desvincular e criar o script na outra conta.
+const codigoScriptAgenda = (chave) => `// Planejamento de Horas → Google Agenda
+// Cole este código em script.google.com (com o e-mail da agenda) e implante como "App da Web".
+const CHAVE = "${chave}";
+
+function doPost(e) {
+  let d = {};
+  try { d = JSON.parse(e.postData.contents); } catch (x) {}
+  if (d.chave !== CHAVE) return saida({ ok: false, erro: "chave" });
+  const agenda = CalendarApp.getDefaultCalendar();
+  if (d.acao === "testar") return saida({ ok: true, conta: agenda.getId(), versao: 2 });
+  if (d.acao === "criar") {
+    const ev = agenda.createEvent(d.titulo, new Date(d.t0), new Date(d.t1), { description: d.descricao || "" });
+    ev.setVisibility(CalendarApp.Visibility.PRIVATE);
+    return saida({ ok: true, id: ev.getId() });
+  }
+  if (d.acao === "atualizar") {
+    const ev = agenda.getEventById(d.id);
+    if (!ev) return saida({ ok: false, erro: "nao_encontrado" });
+    ev.setTime(new Date(d.t0), new Date(d.t1));
+    if (typeof d.descricao === "string") ev.setDescription(d.descricao);
+    return saida({ ok: true, id: d.id });
+  }
+  return saida({ ok: false, erro: "acao" });
+}
+
+function saida(o) {
+  return ContentService.createTextOutput(JSON.stringify(o)).setMimeType(ContentService.MimeType.JSON);
+}
+`;
+
+let chaveNovaAgenda = "",
+  urlNovaAgenda = ""; // o URL colado continua no campo depois de um aviso
+const novaChaveAgenda = () => {
+  const a = new Uint8Array(24);
+  crypto.getRandomValues(a);
+  return Array.from(a, (x) => x.toString(16).padStart(2, "0")).join("");
+};
+
+function htmlAssistenteAgenda() {
+  if (!chaveNovaAgenda) chaveNovaAgenda = novaChaveAgenda();
+  return (
+    `<ol class="note gsteps" style="margin:0;padding-left:18px">` +
+    `<li>Abra <a href="https://script.google.com/home/projects/create" target="_blank" rel="noopener">script.google.com → Novo projeto</a> <b>com o e-mail da agenda</b> (confira a foto no canto de cima; se precisar, troque de conta lá).</li>` +
+    `<li>Apague o que estiver no editor, cole o código abaixo e salve (Ctrl + S).<br><button data-gscopy>📋 Copiar código</button> <span id="gscopym"></span>` +
+    `<textarea id="gscode" readonly rows="4" spellcheck="false" aria-label="Código do script">${escaparHtml(codigoScriptAgenda(chaveNovaAgenda))}</textarea></li>` +
+    `<li>Clique em <b>Implantar → Nova implantação</b>, na engrenagem escolha <b>App da Web</b>, deixe <b>Executar como: Eu</b> e <b>Quem pode acessar: Qualquer pessoa</b>, e clique em <b>Implantar</b>.</li>` +
+    `<li>Clique em <b>Autorizar acesso</b>, escolha a conta da agenda e, no aviso “O Google não verificou este app”, clique em <b>Avançado → Acessar</b> e em <b>Permitir</b>.</li>` +
+    `<li>Copie o <b>URL do app da Web</b> (termina em <code>/exec</code>), cole aqui e clique em <b>Vincular</b>:</li></ol>` +
+    `<div class="df"><input id="gsurl" placeholder="https://script.google.com/macros/s/…/exec" aria-label="URL do app da Web" value="${escaparHtml(urlNovaAgenda)}"></div>`
+  );
+}
+
+// Script de uma versão anterior: mostra o código novo (com a MESMA chave) e como reimplantar sem trocar o URL
+function htmlAtualizarScript() {
+  const v = window.agendaSite && window.agendaSite.obter();
+  if (!v || (v.versao || 1) >= VERSAO_SCRIPT_AGENDA) return "";
+  return (
+    `<div class="gsatu"><b>Atualize o script da agenda (1 minuto)</b><p class="note" style="margin:2px 0">Para a descrição dos eventos listar as atividades com o status (“Atividade - Status”) e se atualizar a cada pausa.</p>` +
+    `<ol class="note gsteps" style="margin:0;padding-left:18px">` +
+    `<li>Abra o seu projeto em <a href="https://script.google.com/home" target="_blank" rel="noopener">script.google.com</a> (o mesmo da vinculação, com o e-mail da agenda).</li>` +
+    `<li>Apague o código, cole este e salve (Ctrl + S).<br><button data-gscopy>📋 Copiar código</button> <span id="gscopym"></span>` +
+    `<textarea id="gscode" readonly rows="4" spellcheck="false" aria-label="Código do script">${escaparHtml(codigoScriptAgenda(v.chave))}</textarea></li>` +
+    `<li><b>Implantar → Gerenciar implantações</b> → ✏️ (editar) → em <b>Versão</b> escolha <b>Nova versão</b> → <b>Implantar</b>. O URL continua o mesmo.</li>` +
+    `<li>Volte aqui e clique em <b>Testar conexão</b>.</li></ol></div>`
+  );
+}
+
+async function vincularAgendaSite() {
+  const url = ($("gsurl") ? $("gsurl").value : "").trim();
+  urlNovaAgenda = url;
+  if (!/^https:\/\/script\.google\.com\/(a\/[^/]+\/)?macros\/s\/[\w-]+\/exec$/.test(url)) {
+    agenda.erro = /\/dev$/.test(url)
+      ? "Esse é o URL de teste (termina em /dev). Use o URL do app da Web da implantação, que termina em /exec."
+      : "Cole o URL do app da Web, que começa com https://script.google.com/macros/s/ e termina em /exec.";
+    return desenharJanela();
+  }
+  agenda.erro = "Conferindo o script…";
+  desenharJanela();
+  try {
+    const { conta, versao } = await window.agendaSite.testar(url, chaveNovaAgenda);
+    await window.agendaSite.salvar({ url, chave: chaveNovaAgenda, conta, versao });
+    chaveNovaAgenda = "";
+    urlNovaAgenda = "";
+    agenda.ligado = true;
+    agenda.erro = "";
+    agenda.bloco = null;
+    agenda.ids = {}; // eventos de outro vínculo não são esticados por este
+    esquemaAgenda = null;
+    salvarAgendaLocal();
+    mostrarMensagem("Google Agenda vinculado" + (conta ? " (" + conta + ")" : "") + ".");
+  } catch (e) {
+    agenda.erro = mensagemErroAgenda(e);
+  }
+  desenharBotaoAgenda();
+  if (janela && janela.kind === "gcal") desenharJanela();
+  enviarPendentesAgenda();
+}
+
+// O vínculo vem do banco da conta: vale em qualquer navegador e não pergunta nada nas pausas
+function sincronizarVinculoSite() {
+  const v = window.agendaSite && window.agendaSite.obter();
+  if (!!v !== !!agenda.ligado) {
+    agenda.ligado = !!v;
+    if (!v) agenda.bloco = null;
+    salvarAgendaLocal();
+  }
+  desenharBotaoAgenda();
+  if (janela && janela.kind === "gcal") desenharJanela();
+  if (v) enviarPendentesAgenda();
+}
 
 // Formato do Google Calendar (usado se o conector não informar o seu)
 const ESQUEMA_PADRAO_AGENDA = {
@@ -234,7 +359,61 @@ async function vincularAgenda() {
 }
 
 // Chamado quando o cronômetro termina um uso (pausa, troca de atividade, concluir…)
-function agendaSessao(pid, t0, t1) {
+const RODAPE_AGENDA = "Registrado pelo Planejamento de Horas",
+  VERSAO_SCRIPT_AGENDA = 2; // versão do código do Apps Script (2: atualiza também a descrição)
+
+// Nome e status atuais das atividades do bloco (o nome guardado vale se a atividade foi apagada)
+function descricaoAgenda(pid, ats) {
+  const lista = ats || [];
+  if (!lista.length) return RODAPE_AGENDA;
+  const atual = {};
+  try {
+    const x =
+      pid === idProjetoAberto && estado.etapas ? estado : projetos[pid] ? JSON.parse(projetos[pid].j) : null;
+    if (x)
+      percorrerAtividades(x, (i) => {
+        if (lista.some((a) => a.id === i.id)) atual[i.id] = i;
+      });
+  } catch (e) {}
+  const linhas = lista.map((a) => {
+    const i = atual[a.id];
+    return ((i && i.d) || a.d || "(sem nome)") + (i && i.s ? " - " + i.s : "");
+  });
+  return linhas.join("\n") + "\n\n" + RODAPE_AGENDA;
+}
+
+// Atividade entra na lista do bloco (uma vez só, na ordem em que foi trabalhada)
+function anotarAtividade(b, aid) {
+  if (!aid) return;
+  b.ats = b.ats || [];
+  if (b.ats.some((a) => a.id === aid)) return;
+  let d = "";
+  try {
+    const i = b.pid === idProjetoAberto ? acharAtividade(aid) : null;
+    d = (i && i.d) || "";
+  } catch (e) {}
+  b.ats.push({ id: aid, d });
+}
+
+// Depois de salvar o projeto aberto: se o status/nome de uma atividade do bloco mudou, atualiza o evento
+let revisarAgendaTimer = null;
+function agendaRevisarDescricao() {
+  clearTimeout(revisarAgendaTimer);
+  revisarAgendaTimer = setTimeout(() => {
+    const b = agenda.bloco;
+    if (!agenda.ligado || !b || !b.ats || !b.ats.length || b.pid !== idProjetoAberto) return;
+    const d = descricaoAgenda(b.pid, b.ats);
+    if (d === b.desc) return;
+    if ([...agenda.pendentes, ...agenda.falhas].some((x) => x.k === b.k && !x.emEnvio)) return; // sai com a descrição nova
+    if (!agenda.ids[b.k] || !ferramentaAtualizarDisponivel()) return;
+    b.desc = d;
+    agenda.pendentes.push({ k: b.k, op: "atualizar", pid: b.pid, p: b.p, t0: b.t0, t1: b.t1, ats: b.ats });
+    salvarAgendaLocal();
+    enviarPendentesAgenda();
+  }, 1500);
+}
+
+function agendaSessao(pid, t0, t1, aid) {
   if (!agenda.ligado) return;
   t0 = Math.round(t0);
   t1 = Math.round(t1);
@@ -243,7 +422,8 @@ function agendaSessao(pid, t0, t1) {
     b = agenda.bloco;
   // continua o bloco aberto: mesmo projeto, pausa curta, mesmo dia
   if (b && b.pid === pid && t0 - b.t1 <= JUNTAR_AGENDA_MS && t0 >= b.t0 && diaDe(t0) === diaDe(b.t0)) {
-    if (t1 <= b.t1) return;
+    anotarAtividade(b, aid);
+    if (t1 <= b.t1) return void salvarAgendaLocal();
     b.t1 = t1;
     b.p = p;
     juntarNaFila(b);
@@ -252,8 +432,9 @@ function agendaSessao(pid, t0, t1) {
     agenda.bloco = null;
     if (!(t1 - t0 >= MINIMO_AGENDA)) return void salvarAgendaLocal();
     const k = "b" + t0.toString(36) + Math.random().toString(36).slice(2, 5);
-    agenda.bloco = { k, pid, p, t0, t1 };
-    agenda.pendentes.push({ k, op: "criar", p, t0, t1 });
+    agenda.bloco = { k, pid, p, t0, t1, ats: [] };
+    anotarAtividade(agenda.bloco, aid);
+    agenda.pendentes.push({ k, op: "criar", pid, p, t0, t1, ats: agenda.bloco.ats });
   }
   salvarAgendaLocal();
   enviarPendentesAgenda();
@@ -268,17 +449,18 @@ function juntarNaFila(b) {
     naFila.t0 = b.t0;
     naFila.t1 = b.t1;
     naFila.p = b.p;
+    naFila.ats = b.ats;
     return;
   }
   if ((agenda.ids[b.k] || saindo) && ferramentaAtualizarDisponivel())
-    agenda.pendentes.push({ k: b.k, op: "atualizar", p: b.p, t0: b.t0, t1: b.t1 });
+    agenda.pendentes.push({ k: b.k, op: "atualizar", pid: b.pid, p: b.p, t0: b.t0, t1: b.t1, ats: b.ats });
   else {
     // conector sem atualização (ou evento sem id): o pedaço novo vira um evento próprio
     const k = "b" + b.t1.toString(36) + Math.random().toString(36).slice(2, 5),
       ult = agenda.enviados.filter((x) => x.k === b.k).pop(),
       ini = ult ? ult.t1 : b.t0;
     agenda.bloco = { ...b, k, t0: ini };
-    agenda.pendentes.push({ k, op: "criar", p: b.p, t0: ini, t1: b.t1 });
+    agenda.pendentes.push({ k, op: "criar", pid: b.pid, p: b.p, t0: ini, t1: b.t1, ats: b.ats });
   }
 }
 
@@ -299,16 +481,14 @@ function idDoEvento(r) {
   return null;
 }
 
-function montarAtualizacao(s) {
-  const base = montarEvento(esquemaAgenda, "⏱ " + s.p, s.t0, s.t1),
+function montarAtualizacao(s, desc) {
+  const base = montarEvento(esquemaAgenda, "⏱ " + s.p, s.t0, s.t1, desc),
     pa = (esquemaAtualizar && esquemaAtualizar.properties) || {},
     entrada = {},
     kId = ["event_id", "eventId", "id"].find((k) => k in pa);
   entrada[kId] = agenda.ids[s.k];
   // manda só o que muda (início, fim) e o que o conector exige (agenda)
-  for (const k in base)
-    if (k in pa && !/summary|title|name|subject|description|details|notes|visibility/.test(k))
-      entrada[k] = base[k];
+  for (const k in base) if (k in pa && !/summary|title|name|subject|visibility/.test(k)) entrada[k] = base[k];
   return entrada;
 }
 
@@ -336,12 +516,14 @@ async function enviarPendentesAgenda() {
           continue;
         }
       }
+      const desc = descricaoAgenda(s.pid, s.ats);
+      if (agenda.bloco && agenda.bloco.k === s.k) agenda.bloco.desc = desc;
       s.emEnvio = true;
       try {
         const r = await mcp.callTool(
           SERVIDOR_AGENDA,
           atualizar ? ferramentaAtualizar : ferramentaAgenda,
-          atualizar ? montarAtualizacao(s) : montarEvento(esquemaAgenda, "⏱ " + s.p, s.t0, s.t1),
+          atualizar ? montarAtualizacao(s, desc) : montarEvento(esquemaAgenda, "⏱ " + s.p, s.t0, s.t1, desc),
           { cache: false },
         );
         if (!atualizar) {
@@ -428,12 +610,14 @@ function janelaAgenda() {
           : ""
       }</div>` +
       (agenda.ligado && SITE
-        ? `<p class="note" style="margin:0">Para usar a agenda de outro e-mail, clique em <b>Desvincular</b> e depois em <b>Vincular Google Agenda</b>, e escolha a outra conta na janela do Google.</p>`
+        ? `<p class="note" style="margin:0">O vínculo fica salvo na sua conta e não pergunta nada ao pausar. Para usar a agenda de outro e-mail, clique em <b>Trocar e-mail</b>.</p>` +
+          htmlAtualizarScript()
         : "") +
       (agenda.ligado
         ? ""
         : SITE
-          ? `<ol class="note" style="margin:0;padding-left:18px"><li>Clique em <b>Vincular Google Agenda</b>.</li><li>Na janela do Google, escolha a conta da agenda — pode ser um e-mail diferente do login do site (use “Usar outra conta”, se ela não aparecer) — e permita o acesso ao <b>Google Agenda</b>.</li><li>Pronto: ao pausar ou trocar de atividade no cronômetro, o horário aparece na sua agenda.</li></ol>`
+          ? `<p class="note" style="margin:0"><b>Vincular (uma vez só, uns 3 minutos):</b> a agenda recebe os horários por um pequeno programa seu no Google Apps Script, gratuito, que roda na sua conta Google. Pode ser um e-mail diferente do login do site.</p>` +
+            htmlAssistenteAgenda()
           : `<ol class="note" style="margin:0;padding-left:18px"><li>No claude.ai, abra <b>Configurações → Conectores</b> e conecte o <b>Google Agenda</b>. Lá você entra com o <b>e-mail e a senha</b> do seu Google, na tela do próprio Google.</li><li>Volte aqui e clique em <b>Vincular Google Agenda</b>; permita o acesso quando o claude.ai perguntar.</li><li>Pronto: ao pausar ou trocar de atividade no cronômetro, o horário aparece na sua agenda.</li></ol>`) +
       (agenda.erro
         ? `<p class="note" style="margin:0;color:var(--bad)">${escaparHtml(agenda.erro)}</p>`
@@ -452,26 +636,84 @@ function janelaAgenda() {
         ? `<div><b>Últimos enviados</b>${ult.map((s) => `<div class="note" style="margin:0">${escaparHtml(horarioSessao(s))}</div>`).join("")}</div>`
         : "") +
       `<div class="df" style="justify-content:flex-end">` +
-      (agenda.ligado
-        ? `<button data-gcoff title="Para de enviar os horários para a agenda">Desvincular</button><button class="p" data-gcon>Verificar conexão</button>`
-        : `<button data-dclose>Agora não</button><button class="p" data-gcon>Vincular Google Agenda</button>`) +
+      (agenda.ligado && SITE
+        ? `<button data-gcoff title="Para de enviar os horários para a agenda">Desvincular</button><button data-gctroca title="Vincular a agenda de outro e-mail">Trocar e-mail</button><button class="p" data-gcon>Testar conexão</button>`
+        : agenda.ligado
+          ? `<button data-gcoff title="Para de enviar os horários para a agenda">Desvincular</button><button class="p" data-gcon>Verificar conexão</button>`
+          : `<button data-dclose>Agora não</button><button class="p" data-gcon>Vincular Google Agenda</button>`) +
       `</div>`,
   ];
 }
 
 acao("#gcal", () => abrirJanela("gcal"));
 acao("#gchip", () => abrirJanela("gcal"));
-acao("data-gcon", () => vincularAgenda(), { janela: true });
+acao(
+  "data-gcon",
+  () => (SITE ? (agenda.ligado ? testarAgendaSite() : vincularAgendaSite()) : vincularAgenda()),
+  {
+    janela: true,
+  },
+);
+acao(
+  "data-gctroca",
+  async () => {
+    await desvincularAgenda();
+    chaveNovaAgenda = "";
+    desenharJanela();
+  },
+  { janela: true },
+);
+acao(
+  "data-gscopy",
+  async () => {
+    const t = $("gscode");
+    let ok = false;
+    try {
+      await navigator.clipboard.writeText(t.value);
+      ok = true;
+    } catch (e) {
+      t.select();
+      try {
+        ok = document.execCommand("copy");
+      } catch (x) {}
+    }
+    $("gscopym").textContent = ok ? "Copiado!" : "Selecione o texto abaixo e copie com Ctrl + C.";
+  },
+  { janela: true },
+);
+
+async function testarAgendaSite() {
+  const v = window.agendaSite.obter();
+  agenda.erro = "Testando…";
+  desenharJanela();
+  try {
+    const { conta, versao } = await window.agendaSite.testar(v.url, v.chave);
+    if ((conta && conta !== v.conta) || versao !== v.versao)
+      await window.agendaSite.salvar({ ...v, conta: conta || v.conta, versao });
+    agenda.erro = "";
+    mostrarMensagem("Conexão com o Google Agenda ok" + (conta ? " (" + conta + ")" : "") + ".");
+  } catch (e) {
+    agenda.erro = mensagemErroAgenda(e);
+  }
+  desenharBotaoAgenda();
+  desenharJanela();
+  enviarPendentesAgenda();
+}
+
+async function desvincularAgenda() {
+  agenda.ligado = false;
+  agenda.erro = "";
+  agenda.pendentes = [];
+  agenda.bloco = null;
+  if (window.esquecerContaAgenda) window.esquecerContaAgenda(); // a próxima vinculação pede a conta de novo
+  if (SITE && window.agendaSite) await window.agendaSite.apagar();
+  salvarAgendaLocal();
+  desenharBotaoAgenda();
+}
 acao(
   "data-gcoff",
-  () => {
-    agenda.ligado = false;
-    agenda.erro = "";
-    agenda.pendentes = [];
-    agenda.bloco = null;
-    if (window.esquecerContaAgenda) window.esquecerContaAgenda(); // a próxima vinculação pede a conta de novo
-    salvarAgendaLocal();
-    desenharBotaoAgenda();
+  async () => {
+    await desvincularAgenda();
     desenharJanela();
   },
   { janela: true },
@@ -500,5 +742,10 @@ acao(
 );
 
 desenharBotaoAgenda();
+if (SITE) {
+  // vínculo antigo (pela janela do Google) não vale mais: só o do banco da conta
+  if (!(window.agendaSite && window.agendaSite.obter())) agenda.ligado = false;
+  document.addEventListener("agenda-site", sincronizarVinculoSite);
+}
 // ao abrir a ferramenta, envia o que ficou na fila (usos que nunca chegaram ao Google)
 setTimeout(enviarPendentesAgenda, 3000);

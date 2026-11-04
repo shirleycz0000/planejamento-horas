@@ -5,9 +5,9 @@
 // ferramenta funcionar igual nas duas versões:
 //   claude.use("db")          → Firestore, em users/<id do usuário>/... (cada login vê só os seus dados)
 //   claude.use("downloads")   → baixa o arquivo pelo navegador
-//   claude.use("mcp")         → Google Agenda direto pela API do Google (create_event)
-//   claude.use("permissions") → pede ao Google a permissão da agenda
-// A configuração (chaves do Firebase e o id do cliente Google) fica em config.js.
+//   claude.use("mcp")         → Google Agenda pelo app da Web do Google Apps Script da usuária
+//                                (create_event / update_event; veja "Google Agenda" abaixo)
+// A configuração (chaves do Firebase) fica em config.js.
 
 (function () {
   "use strict";
@@ -18,7 +18,7 @@
 
   // Chaves do navegador que guardam dados de um usuário (o tema fica)
   const CHAVES_DO_USUARIO =
-    /^(ph|phs2|phtpl|phcad|phcad-ini|phcad3|phcad3-ini|phcopias|phgcal|phgcal-conta)$/;
+    /^(ph|phs2|phtpl|phcad|phcad-ini|phcad3|phcad3-ini|phcopias|phgcal|phgcal-conta|phgcal-site)$/;
   function limparDadosLocais() {
     try {
       Object.keys(localStorage)
@@ -181,7 +181,7 @@
       document.body.classList.remove("sem-login");
       mostrarConta(u);
       resolverDb(bancoDoUsuario(u.uid));
-      if (cfg.googleClientId) carregarGoogle().catch(() => {}); // deixa pronta a janela da agenda
+      carregarVinculo();
     });
   }
 
@@ -252,146 +252,96 @@
     },
   };
 
-  // ---------- Google Agenda (direto pela API do Google) ----------
-  const ESCOPO_AGENDA = "https://www.googleapis.com/auth/calendar.events",
-    SERVIDOR = "Google Calendar";
-  let clienteToken = null,
-    token = null,
-    validade = 0;
+  // ---------- Google Agenda (pelo Google Apps Script da própria conta) ----------
+  // O acesso direto do site à API do Google dura só 1 hora e, para renovar, abre a janela do
+  // Google. Por isso a agenda usa um pequeno "app da Web" do Google Apps Script, criado uma vez
+  // na conta Google da agenda (CODIGO_SCRIPT). Ele roda como a dona da conta, não expira e só
+  // aceita pedidos com a chave do vínculo. O vínculo { url, chave, conta } fica no banco do
+  // usuário (users/<uid>/meta/agenda), então vale em qualquer computador ou celular.
+  const SERVIDOR = "Google Calendar";
+  let vinculo = null,
+    resolverVinculo;
+  const vinculoPronto = new Promise((r) => (resolverVinculo = r));
   try {
-    const t = JSON.parse(sessionStorage.getItem("phgtok") || "null");
-    if (t && t.v > Date.now() + 60000) {
-      token = t.t;
-      validade = t.v;
-    }
+    vinculo = JSON.parse(localStorage.getItem("phgcal-site") || "null");
   } catch (e) {}
 
   const erro = (code, message) => Object.assign(new Error(message || code), { code });
+  const docVinculo = () => fs.doc("users/" + usuario.uid + "/meta/agenda");
 
-  // Conta Google da agenda: pode ser diferente do e-mail do login do site
-  const lerConta = () => {
+  async function carregarVinculo() {
     try {
-      return localStorage.getItem("phgcal-conta") || "";
+      const d = await docVinculo().get();
+      vinculo = d.exists && d.data() && d.data().url ? d.data() : null;
+      localStorage.setItem("phgcal-site", JSON.stringify(vinculo));
+    } catch (e) {} // sem rede: fica com a cópia do navegador
+    resolverVinculo();
+    document.dispatchEvent(new CustomEvent("agenda-site"));
+  }
+
+  // Manda um pedido ao script. Erros de rede são "incertos" (o evento pode ter sido criado).
+  async function chamarScript(dados, v = vinculo) {
+    if (!v || !v.url) throw erro("server_not_connected");
+    let r;
+    try {
+      r = await fetch(v.url, {
+        method: "POST",
+        headers: { "Content-Type": "text/plain;charset=utf-8" }, // pedido simples (sem pré-verificação CORS)
+        body: JSON.stringify({ ...dados, chave: v.chave }),
+      });
     } catch (e) {
-      return "";
+      throw erro("upstream_error", "sem resposta do Google");
     }
-  };
-  window.contaAgenda = lerConta;
-  window.esquecerContaAgenda = () => {
-    if (token && window.google && google.accounts && google.accounts.oauth2)
+    let j = null;
+    try {
+      j = await r.json();
+    } catch (e) {
+      // o Google devolveu uma página em vez do resultado: implantação errada ou sem acesso
+      throw erro("script_invalido");
+    }
+    if (!j || !j.ok) {
+      if (j && j.erro === "chave") throw erro("script_chave");
+      if (j && j.erro === "nao_encontrado") throw erro("tool_error", "o evento não está mais na agenda");
+      throw erro("tool_error", (j && j.mensagem) || "erro no script");
+    }
+    return j;
+  }
+
+  const ms = (x) => Date.parse((x && (x.dateTime || x.date_time)) || x);
+
+  window.agendaSite = {
+    pronto: () => vinculoPronto,
+    obter: () => vinculo,
+    // confere um script novo; devolve a conta (e-mail) da agenda
+    testar: async (url, chave) => {
+      const j = await chamarScript({ acao: "testar" }, { url, chave });
+      return { conta: j.conta || "", versao: Number(j.versao) || 1 };
+    },
+    salvar: async (v) => {
+      vinculo = v;
+      localStorage.setItem("phgcal-site", JSON.stringify(v));
+      await docVinculo().set({ ...v, upd: Date.now() });
+    },
+    apagar: async () => {
+      vinculo = null;
+      localStorage.removeItem("phgcal-site");
       try {
-        google.accounts.oauth2.revoke(token, () => {});
+        await docVinculo().delete();
       } catch (e) {}
-    token = null;
-    validade = 0;
-    try {
-      localStorage.removeItem("phgcal-conta");
-      sessionStorage.removeItem("phgtok");
-    } catch (e) {}
+    },
   };
-  // Descobre o e-mail da agenda principal da conta autorizada (o id dela é o e-mail)
-  async function guardarConta(tk) {
-    try {
-      const r = await fetch("https://www.googleapis.com/calendar/v3/calendars/primary", {
-        headers: { Authorization: "Bearer " + tk },
-      });
-      if (r.ok) {
-        const c = await r.json();
-        if (c && c.id) localStorage.setItem("phgcal-conta", c.id);
-      }
-    } catch (e) {}
-  }
-
-  function carregarGoogle() {
-    if (window.google && google.accounts && google.accounts.oauth2) return Promise.resolve();
-    return new Promise((ok, falha) => {
-      const s = document.createElement("script");
-      s.src = "https://accounts.google.com/gsi/client";
-      s.onload = () => ok();
-      s.onerror = () => falha(erro("server_unavailable", "não carregou o login do Google"));
-      document.head.appendChild(s);
-    });
-  }
-
-  // Pede um token da agenda ao Google; interativo = pode mostrar a tela de permissão
-  // interativo: abre a escolha de conta do Google (pode ser outra conta, diferente do login do site)
-  async function pedirToken(interativo) {
-    if (!interativo && token && validade > Date.now() + 60000) return token;
-    if (!cfg.googleClientId) throw erro("server_not_connected");
-    await carregarGoogle();
-    return new Promise((ok, falha) => {
-      clienteToken = google.accounts.oauth2.initTokenClient({
-        client_id: cfg.googleClientId,
-        scope: ESCOPO_AGENDA,
-        hint: interativo ? undefined : lerConta() || undefined,
-        callback: (r) => {
-          if (r && r.access_token) {
-            token = r.access_token;
-            validade = Date.now() + (Number(r.expires_in) || 3600) * 1000;
-            try {
-              sessionStorage.setItem("phgtok", JSON.stringify({ t: token, v: validade }));
-            } catch (e) {}
-            if (interativo) guardarConta(token).then(() => ok(token));
-            else ok(token);
-          } else falha(erro(interativo ? "consent_required" : "needs_reauth"));
-        },
-        error_callback: () => falha(erro(interativo ? "consent_required" : "needs_reauth")),
-      });
-      clienteToken.requestAccessToken({ prompt: interativo ? "select_account consent" : "" });
-    });
-  }
+  window.contaAgenda = () => (vinculo && vinculo.conta) || "";
 
   const ESQUEMA_EVENTO = {
     type: "object",
     properties: {
-      calendar_id: { type: "string" },
       summary: { type: "string" },
       description: { type: "string" },
       start: { type: "object", properties: { dateTime: { type: "string" }, timeZone: { type: "string" } } },
       end: { type: "object", properties: { dateTime: { type: "string" }, timeZone: { type: "string" } } },
-      visibility: { type: "string", enum: ["default", "public", "private", "confidential"] },
     },
     required: ["summary", "start", "end"],
   };
-
-  // create_event: POST de um evento novo; update_event: PATCH (só os campos enviados) do evento event_id
-  async function criarEvento(input, atualizar) {
-    const tk = await pedirToken(false);
-    const { calendar_id, event_id, ...corpo } = input,
-      agenda = encodeURIComponent(calendar_id || "primary");
-    if (atualizar && !event_id) throw erro("bad_request", "falta o event_id");
-    let r;
-    try {
-      r = await fetch(
-        "https://www.googleapis.com/calendar/v3/calendars/" +
-          agenda +
-          "/events" +
-          (atualizar ? "/" + encodeURIComponent(event_id) : ""),
-        {
-          method: atualizar ? "PATCH" : "POST",
-          headers: { Authorization: "Bearer " + tk, "Content-Type": "application/json" },
-          body: JSON.stringify(corpo),
-        },
-      );
-    } catch (e) {
-      throw erro("upstream_error", "sem resposta do Google");
-    }
-    if (r.status === 401) {
-      token = null;
-      throw erro("needs_reauth");
-    }
-    if (r.status === 403)
-      throw erro("tool_error", "o Google recusou (a API do Google Agenda está ativada no projeto?)");
-    if (r.status >= 500) throw erro("upstream_error", "erro " + r.status + " no Google");
-    if (!r.ok) {
-      let m = "erro " + r.status;
-      try {
-        m = (await r.json()).error.message || m;
-      } catch (e) {}
-      throw erro("tool_error", m);
-    }
-    return { content: [{ type: "text", text: "ok" }], payload: await r.json() };
-  }
 
   const mcp = {
     listTools: async () => ({
@@ -412,44 +362,50 @@
         return {
           name: t,
           inputSchema: {
-            ...ESQUEMA_EVENTO,
-            properties: { event_id: { type: "string" }, ...ESQUEMA_EVENTO.properties },
-            required: ["event_id"],
+            type: "object",
+            properties: {
+              event_id: { type: "string" },
+              start: ESQUEMA_EVENTO.properties.start,
+              end: ESQUEMA_EVENTO.properties.end,
+              description: { type: "string" },
+            },
+            required: ["event_id", "start", "end"],
           },
         };
       return { name: t, inputSchema: ESQUEMA_EVENTO };
     },
     callTool: async (s, t, input) => {
-      if (s !== SERVIDOR || (t !== "create_event" && t !== "update_event")) throw erro("not_in_manifest");
-      return criarEvento(input, t === "update_event");
-    },
-  };
-  const permissoes = {
-    request: async (lista) => {
-      const r = {};
-      for (const k of lista) {
-        if (k !== "mcp:" + SERVIDOR) {
-          r[k] = "unavailable";
-          continue;
-        }
-        try {
-          await pedirToken(true);
-          r[k] = "granted";
-        } catch (e) {
-          r[k] = "denied";
-        }
+      if (s !== SERVIDOR) throw erro("not_in_manifest");
+      await vinculoPronto;
+      if (t === "create_event") {
+        const j = await chamarScript({
+          acao: "criar",
+          titulo: input.summary,
+          descricao: input.description || "",
+          t0: ms(input.start),
+          t1: ms(input.end),
+        });
+        return { content: [{ type: "text", text: "ok" }], payload: { id: j.id } };
       }
-      return r;
+      if (t === "update_event") {
+        await chamarScript({
+          acao: "atualizar",
+          id: input.event_id,
+          t0: ms(input.start),
+          t1: ms(input.end),
+          ...(typeof input.description === "string" ? { descricao: input.description } : {}),
+        });
+        return { content: [{ type: "text", text: "ok" }], payload: { id: input.event_id } };
+      }
+      throw erro("not_in_manifest");
     },
-    state: async () => ({ ["mcp:" + SERVIDOR]: token ? "granted" : "prompt" }),
   };
 
   window.claude = {
     use: async (nome) => {
       if (nome === "db") return configurado ? dbPronto : new Promise(() => {}); // sem config: fica na tela de login
       if (nome === "downloads") return downloads;
-      if (nome === "mcp") return cfg.googleClientId ? mcp : null;
-      if (nome === "permissions") return cfg.googleClientId ? permissoes : null;
+      if (nome === "mcp") return configurado ? mcp : null;
       return null;
     },
   };

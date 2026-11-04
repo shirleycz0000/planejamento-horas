@@ -9,7 +9,7 @@ function pararCronometro() {
       x.u += h;
       registrarIntervalo(x, h, estado.run.t0, t1);
       registrarSessao(x, estado.run.t0, t1);
-      agendaSessao(idProjetoAberto, estado.run.t0, t1);
+      agendaSessao(idProjetoAberto, estado.run.t0, t1, x.id);
     }
     estado.run = null;
   }
@@ -125,7 +125,7 @@ function encerrarCronometro(o) {
       i.u = (i.u || 0) + h;
       registrarIntervalo(i, h, x.run.t0, t1);
       registrarSessao(i, x.run.t0, t1);
-      agendaSessao(o.pid, x.run.t0, t1);
+      agendaSessao(o.pid, x.run.t0, t1, i.id);
     }
     x.run = null;
   });

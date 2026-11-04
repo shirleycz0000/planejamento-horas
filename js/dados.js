@@ -268,6 +268,7 @@ function usadoAtual(i) {
 
 async function salvar() {
   if (!idProjetoAberto) return;
+  if (typeof agendaRevisarDescricao === "function") agendaRevisarDescricao(); // status/nome mudou: atualiza o evento
   const j = JSON.stringify(estado),
     k = chaveDoEstado(estado);
   if (ultimaChave && ultimaChave !== k) {
